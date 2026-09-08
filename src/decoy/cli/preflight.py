@@ -11,9 +11,10 @@ What preflight checks (honest framing)
 4. File existence:     Does each declared source file exist on disk?
 5. File readability:   Can each source file be opened for reading?
 6. Target overwrite:   Does any output target already exist (advisory)?
-7. Capacity (v1):      Would the engine's out-of-core-FK memory gate refuse this
-                       job? Covers the out-of-core-FK route ONLY -- see the OOM
-                       checker v1 note below.
+7. Capacity (v1):      Out-of-core-FK memory feasibility. The build-floor
+                       estimate is advisory (warns, does not refuse); only a
+                       fan-in impossibility exits EXIT_CAPACITY. Covers the
+                       out-of-core-FK route ONLY -- see the OOM checker v1 note.
 
 What preflight does NOT check
 ------------------------------
@@ -83,8 +84,8 @@ What preflight checks:
   - YAML syntax and schema (same as `decoy validate`)
   - Source file existence and readability
   - Target overwrite risk (advisory warning)
-  - Out-of-core-FK memory capacity (v1; exits EXIT_CAPACITY if insufficient --
-    see: decoy explain exit-codes)
+  - Out-of-core-FK memory capacity (v1; build-floor is advisory, only a fan-in
+    impossibility exits EXIT_CAPACITY -- see: decoy explain exit-codes)
 
 What preflight does NOT check:
   - Platform server-side conditions (secrets, RBAC, schedules, network targets)

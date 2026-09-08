@@ -195,8 +195,8 @@ What preflight checks:
   - YAML syntax and schema (same as `decoy validate`)
   - Source file existence and readability
   - Target overwrite risk (advisory warning)
-  - Out-of-core-FK memory capacity (v1; exits EXIT_CAPACITY if insufficient --
-    see: decoy explain exit-codes)
+  - Out-of-core-FK memory capacity (v1; build-floor is advisory, only a fan-in
+    impossibility exits EXIT_CAPACITY -- see: decoy explain exit-codes)
 
 What preflight does NOT check:
   - Platform server-side conditions (secrets, RBAC, schedules, network targets)
