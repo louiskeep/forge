@@ -505,7 +505,19 @@ def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccum
             code=estimate.code,
         )
     elif estimate.verdict is CapacityVerdict.UNKNOWN:
-        acc.add_pass(name="capacity.out_of_core_fk", message=f"not checked -- {estimate.message}")
+        # An uncertain route (a byte-estimate-promoted OOC job) forces UNKNOWN,
+        # but a build-floor advisory can still ride along on the estimate. Surface
+        # it as a warning so the recommendation is not lost and --fail-on-warning
+        # can act on it, exactly as it does on the confirmed FIT+warned path.
+        if estimate.warned:
+            acc.add_warn(
+                name="capacity.out_of_core_fk",
+                message=f"ADVISORY (route unconfirmed) -- {estimate.message}",
+            )
+        else:
+            acc.add_pass(
+                name="capacity.out_of_core_fk", message=f"not checked -- {estimate.message}"
+            )
     else:  # NOT_APPLICABLE
         acc.add_pass(
             name="capacity.out_of_core_fk", message=f"not applicable -- {estimate.message}"
