@@ -4,14 +4,20 @@ agree -- preflight INSUFFICIENT <=> run raises + exits EXIT_CAPACITY. Real
 derivation on both sides (real files, real `evaluate_capacity`), not a
 mocked verdict standing in for either command.
 
-Parametrized over fit and insufficient (the `out_of_core_insufficient_memory`
-code). The sibling `out_of_core_fanin_exceeds_budget` refusal needs a
-many-distinct-parent-tables-into-one-child topology to occur through a real
-FK graph, which sits awkwardly against the out-of-core route's
-single-parent-per-child compatibility gate -- that code's evaluator-level
-parity (same inputs, same evaluator, same raise) is covered in
-decoy-engine's own `test_capacity_evaluator.py`; this file exercises the one
-that arises naturally through a real CLI job, `out_of_core_insufficient_memory`.
+ROUND-4 (engine `fix/ooc-preflight-overreject-recalibration`): the
+build-floor gate is now advisory, so it can no longer produce a mutual
+INSUFFICIENT/EXIT_CAPACITY refusal at all -- the former 300k-row build-floor
+case now yields a mutual WARNING instead (`test_build_floor_case_now_warns_
+on_both_sides`). Fan-in is the only refusal left, and it genuinely cannot be
+constructed through a real FK graph: the out-of-core route rejects multiple
+parents for one child (`_compat.py`), the only way `incoming_edge_counts[
+table] > 1` can arise, and every resolved budget floors at
+`_MIN_BUDGET_BYTES` (64 MiB) -- comfortably above what any
+single-parent-per-child topology's fan-in (capped at live<=2) ever needs. So
+`test_fanin_agrees_preflight_and_run_both_refuse` mocks the engine boundary
+on both commands instead of building an incompatible graph; the fan-in
+evaluator-level parity (same inputs, same evaluator, same raise) is proven
+without mocks in decoy-engine's own `test_capacity_evaluator.py`.
 
 Both commands need the SAME lowered out-of-core size threshold (neither
 exposes a CLI flag for it): `low_threshold` patches `decoy_engine.execution.
@@ -146,23 +152,74 @@ class TestParity:
         run_result = runner.invoke(app, ["run", str(config_path)])
         assert run_result.exit_code == EXIT_OK
 
-    def test_insufficient_agrees_preflight_and_run_both_refuse(
+    def test_build_floor_case_now_warns_on_both_sides(
         self, tmp_path: Path, low_threshold_both_commands
     ) -> None:
-        # A parent large enough to push its floor past the resolved budget
-        # even a 1 MiB detected ceiling floors at (_MIN_BUDGET_BYTES, 64 MiB).
+        # ROUND-4: this 300k-row shape used to be a mutual hard refusal
+        # (`out_of_core_insufficient_memory`) at a 1 MiB detected ceiling
+        # (floored to the 64 MiB `_MIN_BUDGET_BYTES` minimum). It is now
+        # mutual-advisory -- but AT that exact 64 MiB cap, the floor/cap
+        # margin is razor-thin (~3 MB), and a REAL run can still genuinely
+        # OOM inside DuckDB there (the advisory recommends more memory; it
+        # does not guarantee the job fits at a cap this tight -- see the
+        # engine plan's own risk section). A slightly larger detected
+        # ceiling (2 GiB + 100 MiB, giving a ~100 MB cap against this
+        # parent's ~58 MB floor) keeps the SAME warn-band outcome
+        # (floor >= 0.6 * cap) with real headroom, so `run` actually
+        # completes rather than racing DuckDB's own allocator at the edge.
         parent, child = _parent_child_tables(300_000)
         config_path = _write_config(tmp_path, parent, child)
+        ceiling_bytes = 2 * 1024 * 1024 * 1024 + 100 * 1024 * 1024
 
         with mock.patch(
             "decoy_engine.execution.out_of_core._budget.detect_effective_memory_bytes",
-            return_value=1024 * 1024,
+            return_value=ceiling_bytes,
+        ):
+            preflight_result = runner.invoke(app, ["preflight", str(config_path)])
+            run_result = runner.invoke(app, ["run", str(config_path)])
+
+        assert preflight_result.exit_code == EXIT_OK
+        assert "ADVISORY" in preflight_result.output
+        assert "OK" in preflight_result.output  # not a fail: the overall command still passes
+        assert "INSUFFICIENT" not in preflight_result.output
+
+        assert run_result.exit_code == EXIT_OK
+
+    def test_fanin_agrees_preflight_and_run_both_refuse(self, tmp_path: Path) -> None:
+        # The fan-in refusal genuinely cannot be constructed through a real
+        # FK graph on this route (see the module docstring); this mocks the
+        # engine boundary identically on both commands so the CLI's own
+        # rendering/exit-code parity for a fan-in refusal is still proven,
+        # even though the underlying condition is simulated rather than
+        # reached through real routing + budget math.
+        import decoy_engine
+        import decoy_engine.execution as engine_exec
+        from decoy_engine import ExecutionError
+
+        parent, child = _parent_child_tables(40)
+        config_path = _write_config(tmp_path, parent, child)
+
+        def _boom_estimate(*_a: Any, **_k: Any) -> Any:
+            raise ExecutionError(
+                code="out_of_core_fanin_exceeds_budget",
+                message="fan-in exceeds budget (test double).",
+            )
+
+        def _boom_run(*_a: Any, **_k: Any) -> Any:
+            raise ExecutionError(
+                code="out_of_core_fanin_exceeds_budget",
+                message="fan-in exceeds budget (test double).",
+            )
+
+        with (
+            mock.patch.object(engine_exec, "estimate_job_capacity", _boom_estimate),
+            mock.patch.object(decoy_engine, "run_pipeline", _boom_run),
         ):
             preflight_result = runner.invoke(app, ["preflight", str(config_path)])
             run_result = runner.invoke(app, ["run", str(config_path)])
 
         assert preflight_result.exit_code == EXIT_CAPACITY
-        assert "INSUFFICIENT" in preflight_result.output
+        assert "capacity:" in preflight_result.output
 
         assert run_result.exit_code == EXIT_CAPACITY
         assert "capacity:" in run_result.output

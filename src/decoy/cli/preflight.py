@@ -174,9 +174,7 @@ class _PreflightAccumulator:
 # ---------------------------------------------------------------------------
 
 
-def _check_source_files(
-    raw: dict[str, Any], base_dir: Path, acc: _PreflightAccumulator
-) -> None:
+def _check_source_files(raw: dict[str, Any], base_dir: Path, acc: _PreflightAccumulator) -> None:
     """Check that every declared source file exists and is readable.
 
     File checks only. Parser config, column layout, and format inference are
@@ -444,6 +442,22 @@ def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccum
     try:
         estimate = _engine_execution.estimate_job_capacity(config_dump, config_path.parent)
     except ExecutionError as exc:
+        if exc.code == "out_of_core_fanin_exceeds_budget":
+            # Round-4 (engine): the build-floor gate is now advisory, so
+            # `estimate_job_capacity` no longer returns INSUFFICIENT for
+            # that case -- but a fan-in impossibility discovered while
+            # resolving the memory budget still PROPAGATES as this
+            # ExecutionError instead of coming back as a verdict. Render it
+            # the same way the INSUFFICIENT verdict branch below does (a
+            # FAIL that trips EXIT_CAPACITY), so a fan-in job still refuses
+            # cleanly instead of crashing preflight on a raw traceback.
+            acc.capacity_insufficient = True
+            acc.add_fail(
+                name="capacity.out_of_core_fk",
+                message=f"INSUFFICIENT -- {exc.message}",
+                code=exc.code,
+            )
+            return
         if exc.code != "capacity_source_unprofilable":
             raise
         acc.add_fail(
@@ -456,7 +470,22 @@ def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccum
     needed = _format_gib(estimate.needed_bytes)
     available = _format_gib(estimate.available_bytes)
 
-    if estimate.verdict is CapacityVerdict.FIT:
+    if estimate.verdict is CapacityVerdict.FIT and estimate.warned:
+        # Round-4: FIT no longer means "clears the build-floor budget" -- it
+        # means "no hard impossibility detected". `warned=True` marks an
+        # adverse build-floor prediction (relation-build only; excludes
+        # resident inputs, accumulated outputs, and ingestion peak); render
+        # it as a WARNING, not a green PASS, so `--fail-on-warning` can act
+        # on it, but the job is not refused either way.
+        acc.add_warn(
+            name="capacity.out_of_core_fk",
+            message=(
+                "ADVISORY -- OOC-FK estimated relation-build floor exceeds the build "
+                f"cap it would receive; recommend {needed} of memory (budget {available}). "
+                "The job is not refused; this is a recommendation, not a hard limit."
+            ),
+        )
+    elif estimate.verdict is CapacityVerdict.FIT:
         acc.add_pass(
             name="capacity.out_of_core_fk",
             message=(
@@ -687,7 +716,12 @@ def _emit_preflight_result(
     # checked, and not applicable are all informative outcomes an operator
     # should see, not just the failure case.
     for cap in capacity_checks:
-        label = error("capacity:") if cap.status == "fail" else hint("capacity:")
+        if cap.status == "fail":
+            label = error("capacity:")
+        elif cap.status == "warn":
+            label = warn("capacity:")
+        else:
+            label = hint("capacity:")
         state.err_console.print(label, cap.message)
 
     if acc.has_failures:

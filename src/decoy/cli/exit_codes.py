@@ -66,9 +66,20 @@ Raised by `decoy run` when the engine's out-of-core-FK memory gate refuses a
 job, and by `decoy preflight` when its capacity check predicts the same
 refusal before the run starts. The fix is a bigger host/cgroup ceiling or a
 smaller job -- not a config mistake (EXIT_USAGE) and not an engine defect
-(EXIT_RUNTIME). Covers exactly two engine codes:
-`out_of_core_insufficient_memory` and `out_of_core_fanin_exceeds_budget`.
-v1 checks the out-of-core-FK route only; see `decoy explain exit-codes`."""
+(EXIT_RUNTIME).
+
+2026-09-08 (fan-in-only recalibration, paired with the engine's
+`fix/ooc-preflight-overreject-recalibration`): capacity refusal is now
+FAN-IN-ONLY. The engine's build-floor estimate (the other half of this gate)
+is advisory, not a refusal -- a job whose predicted relation-build floor
+exceeds its build cap now completes preflight/run with a WARNING (status
+"warn", `--fail-on-warning` governs whether that warning itself exits
+nonzero), not EXIT_CAPACITY. `out_of_core_insufficient_memory` is kept
+recognized as LEGACY-engine compat only (an older engine still running the
+pre-recalibration hard-fail gate can still raise it); on a current engine
+the only code this exit actually fires for is
+`out_of_core_fanin_exceeds_budget`. v1 checks the out-of-core-FK route only;
+see `decoy explain exit-codes`."""
 
 __all__ = [
     "EXIT_CAPACITY",

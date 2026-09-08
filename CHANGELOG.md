@@ -8,6 +8,31 @@ version numbers follow the [versioning policy](docs/release/versioning.md).
 
 ## [Unreleased]
 
+### Changed (OOM checker recalibration: build-floor refusal is now advisory, capacity refusal is fan-in-only, 2026-09-08)
+
+- **`FIT` no longer means "clears the budget."** The engine's OOM checker
+  paired with this release (`fix/ooc-preflight-overreject-recalibration`)
+  redefines its public `CapacityVerdict.FIT` to mean "no hard impossibility
+  detected." The measured completion-cap data showed the old flat
+  build-floor refusal was over-rejecting jobs that would have completed;
+  that refusal is now a WARNING with a recommended host size, not a job
+  refusal. The only capacity refusal left is fan-in (co-live DuckDB
+  instances that cannot fit even a 1 MB `memory_limit` under the budget) --
+  see the updated `EXIT_CAPACITY` doc comment in `exit_codes.py`.
+- **`decoy preflight` renders the advisory as a warning, not a green pass.**
+  When the engine estimate reports `FIT` with `warned=True`, preflight now
+  emits a `capacity.out_of_core_fk` finding with `status: "warn"` (both
+  human and `--json` output) instead of folding it into a silent pass --
+  `--fail-on-warning` governs whether that alone exits nonzero; default
+  execution still proceeds. A fan-in impossibility discovered while the
+  engine resolves its memory budget (previously mis-rendered, if at all) now
+  reliably surfaces as a `capacity.out_of_core_fk` FAIL and exits
+  `EXIT_CAPACITY`, matching `decoy run`'s behavior for the same case.
+- **Legacy-engine compat kept.** `out_of_core_insufficient_memory` (the old
+  build-floor hard-fail code) stays recognized by `decoy run`'s capacity
+  matcher for an older, not-yet-recalibrated engine; a current engine never
+  raises it.
+
 ### Added (OOM checker v1: labeled capacity refusal in `decoy run` + a pre-run capacity check in `decoy preflight`, 2026-07-24)
 
 - **New exit code `EXIT_CAPACITY = 5`.** The engine's out-of-core-FK
