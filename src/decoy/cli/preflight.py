@@ -591,8 +591,8 @@ def preflight(
     check covers the out-of-core-FK route only -- it does not cover the
     ingestion peak `decoy run` pays before the engine's gate runs, or the
     generate path. Use `decoy validate` for pure schema-only checks; use
-    this command when you want to confirm source files are present and the
-    job would clear the memory gate before starting a run.
+    this command when you want to confirm source files are present and check
+    the job's capacity feasibility before starting a run.
     """
     state = setup_output(json_, quiet, verbose)
     config_str = str(config)

@@ -8,16 +8,19 @@ ROUND-4 (engine `fix/ooc-preflight-overreject-recalibration`): the
 build-floor gate is now advisory, so it can no longer produce a mutual
 INSUFFICIENT/EXIT_CAPACITY refusal at all -- the former 300k-row build-floor
 case now yields a mutual WARNING instead (`test_build_floor_case_now_warns_
-on_both_sides`). Fan-in is the only refusal left, and it genuinely cannot be
-constructed through a real FK graph: the out-of-core route rejects multiple
-parents for one child (`_compat.py`), the only way `incoming_edge_counts[
-table] > 1` can arise, and every resolved budget floors at
-`_MIN_BUDGET_BYTES` (64 MiB) -- comfortably above what any
-single-parent-per-child topology's fan-in (capped at live<=2) ever needs. So
-`test_fanin_agrees_preflight_and_run_both_refuse` mocks the engine boundary
-on both commands instead of building an incompatible graph; the fan-in
-evaluator-level parity (same inputs, same evaluator, same raise) is proven
-without mocks in decoy-engine's own `test_capacity_evaluator.py`.
+on_both_sides`). Fan-in is the only refusal left, and it IS constructible
+through a real FK graph: `_compat.py` only rejects multiple parents for the
+SAME (child_table, child_columns) tuple, not a table with many DISTINCT
+incoming edges. `TestRealFanInIsReachable` builds a 67-distinct-parent
+topology (each parent on its own child column) so `child`'s incoming-edge
+count reaches 67, and the resident-path phase sizer opens that table's
+joiners+build at `incoming_edges + 1 = 68` co-live DuckDB instances -- more
+than the 64 MiB `_MIN_BUDGET_BYTES` floor can seat even a 1 MB `memory_limit`
+apiece, so both commands hit the real, unmocked `out_of_core_fanin_exceeds_
+budget` raise. `test_fanin_agrees_preflight_and_run_both_refuse` below still
+mocks the engine boundary directly -- kept as a smaller, deterministic pin of
+the CLI's own rendering/exit-code contract for that code, now that the real
+topology test above it proves the condition is genuinely reachable.
 
 Both commands need the SAME lowered out-of-core size threshold (neither
 exposes a CLI flag for it): `low_threshold` patches `decoy_engine.execution.
@@ -186,12 +189,11 @@ class TestParity:
         assert run_result.exit_code == EXIT_OK
 
     def test_fanin_agrees_preflight_and_run_both_refuse(self, tmp_path: Path) -> None:
-        # The fan-in refusal genuinely cannot be constructed through a real
-        # FK graph on this route (see the module docstring); this mocks the
-        # engine boundary identically on both commands so the CLI's own
-        # rendering/exit-code parity for a fan-in refusal is still proven,
-        # even though the underlying condition is simulated rather than
-        # reached through real routing + budget math.
+        # `TestRealFanInIsReachable` below proves this condition is reachable
+        # through a real 67-distinct-parent FK graph; this test keeps a
+        # simpler, deterministic double of the engine boundary so the CLI's
+        # own rendering/exit-code parity for a fan-in refusal has a
+        # minimal-fixture pin too, independent of that larger topology.
         import decoy_engine
         import decoy_engine.execution as engine_exec
         from decoy_engine import ExecutionError
@@ -220,6 +222,114 @@ class TestParity:
 
         assert preflight_result.exit_code == EXIT_CAPACITY
         assert "capacity:" in preflight_result.output
+
+        assert run_result.exit_code == EXIT_CAPACITY
+        assert "capacity:" in run_result.output
+
+
+# A table's incoming-edge count on the resident path opens `incoming + 1`
+# co-live DuckDB instances (joiners plus that table's own build); raising
+# `out_of_core_fanin_exceeds_budget` needs `(incoming + 1) * 1_000_000 >
+# _MIN_BUDGET_BYTES` (67_108_864), i.e. incoming >= 67 -- the boundary the
+# engine's own `_per_instance_mib` docstring pins ("(64 MiB, 67 live) admits;
+# (64 MiB, 68 live) raises").
+_FANIN_INCOMING_EDGES = 67
+# Exceeds `low_threshold_both_commands`' out_of_core_threshold_rows (10) so
+# these tiny tables still route out_of_core; fan-in is a graph-structural
+# property, not a size one, so this stays small purely to keep the test fast.
+_FANIN_ROWS = 40
+
+
+def _fanin_config(tmp_path: Path, n_parents: int = _FANIN_INCOMING_EDGES, rows: int = _FANIN_ROWS) -> Path:
+    """A schema with `n_parents` distinct parent tables, each contributing
+    exactly ONE incoming FK edge into a single shared `child` table on its
+    OWN child column -- distinct (child_table, child_columns) tuples per
+    edge, so `_compat.py`'s multi-parent-same-child-column rejection never
+    fires, while `child`'s total incoming-edge count (what
+    `_incoming_edge_counts` sums) still reaches `n_parents`."""
+    sources: dict[str, Any] = {}
+    tables: list[dict[str, Any]] = []
+    relationships: list[dict[str, Any]] = []
+
+    child_cols: dict[str, pa.Array] = {
+        "cid": pa.array([f"c{j}" for j in range(rows)], type=pa.string())
+    }
+    child_columns_cfg: list[dict[str, Any]] = [_hash_col("cid", "cns")]
+
+    for i in range(n_parents):
+        pname = f"parent_{i}"
+        ns = f"ns{i}"
+        parent_ids = pa.array([f"p{i}_{j}" for j in range(rows)], type=pa.string())
+        pq.write_table(pa.table({"id": parent_ids}), tmp_path / f"{pname}.parquet")
+        sources[pname] = {
+            "type": "file",
+            "path": str(tmp_path / f"{pname}.parquet"),
+            "format": "parquet",
+        }
+        tables.append({"name": pname, "columns": [_hash_col("id", ns)]})
+        fk_col = f"fk_{i}"
+        child_cols[fk_col] = parent_ids
+        child_columns_cfg.append(_hash_col(fk_col, ns))
+        relationships.append(
+            {
+                "parent": {"table": pname, "columns": ["id"]},
+                "children": [{"table": "child", "columns": [fk_col]}],
+                "orphan_policy": "preserve",
+                "namespace": ns,
+            }
+        )
+
+    pq.write_table(pa.table(child_cols), tmp_path / "child.parquet")
+    sources["child"] = {"type": "file", "path": str(tmp_path / "child.parquet"), "format": "parquet"}
+    tables.append({"name": "child", "columns": child_columns_cfg})
+
+    cfg = {
+        "version": 1,
+        "global_settings": {"seed": 7},
+        "sources": sources,
+        "targets": {
+            "child": {
+                "type": "file",
+                "path": str(tmp_path / "child.out.parquet"),
+                "format": "parquet",
+            }
+        },
+        "tables": tables,
+        "relationships": relationships,
+    }
+    p = tmp_path / "pipeline.yaml"
+    p.write_text(yaml.dump(cfg), encoding="utf-8")
+    return p
+
+
+class TestRealFanInIsReachable:
+    """No mocking of the engine's capacity boundary: a real 67-distinct-
+    parent FK graph drives `child`'s incoming-edge count to 67, so the
+    resident-path phase sizer (`resolve_phase_memory_limits` /
+    `evaluate_capacity`'s own fan-in loop) opens 68 co-live DuckDB instances
+    for it -- more than the 64 MiB `_MIN_BUDGET_BYTES` floor can seat even a
+    1 MB `memory_limit` apiece (68 * 1_000_000 > 67_108_864), so both
+    `decoy preflight` and `decoy run` hit the real `out_of_core_fanin_
+    exceeds_budget` raise, proving the plan's acceptance case end to end."""
+
+    def test_fanin_real_topology_exits_capacity_on_both_commands(
+        self, tmp_path: Path, low_threshold_both_commands
+    ) -> None:
+        config_path = _fanin_config(tmp_path)
+
+        with mock.patch(
+            "decoy_engine.execution.out_of_core._budget.detect_effective_memory_bytes",
+            return_value=1024 * 1024,  # small ceiling -> resolved budget floors at 64 MiB
+        ):
+            preflight_result = runner.invoke(app, ["preflight", str(config_path), "--json"])
+            run_result = runner.invoke(app, ["run", str(config_path)])
+
+        import json as _json
+
+        payload = _json.loads(preflight_result.output)
+        assert preflight_result.exit_code == EXIT_CAPACITY
+        assert payload["capacity"]["status"] == "fail"
+        assert payload["capacity"]["code"] == "out_of_core_fanin_exceeds_budget"
 
         assert run_result.exit_code == EXIT_CAPACITY
         assert "capacity:" in run_result.output

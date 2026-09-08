@@ -330,14 +330,15 @@ class TestJsonEnvelope:
     def test_fanin_json_status_is_fail_with_code(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The fan-in refusal itself cannot be constructed through a real FK
-        # graph (the out-of-core route rejects multiple parents for one
-        # child, `_compat.py`, and `_MIN_BUDGET_BYTES` floors every resolved
-        # budget at 64 MiB -- comfortably above what any single-parent-per-
-        # child topology's fan-in needs), so this pins the CLI's rendering of
-        # a PROPAGATED fan-in ExecutionError from `estimate_job_capacity`
-        # (the code path added alongside the engine's round-4 change) by
-        # mocking the estimator boundary directly.
+        # The fan-in refusal IS constructible through a real FK graph --
+        # `_compat.py` only rejects multiple parents resolving the SAME
+        # (child_table, child_columns) tuple, not a table with many DISTINCT
+        # incoming edges (see `tests/e2e/test_run_preflight_capacity_parity.py::
+        # TestRealFanInIsReachable` for a real 67-distinct-parent topology
+        # that drives it). This test instead pins the CLI's rendering of a
+        # PROPAGATED fan-in ExecutionError from `estimate_job_capacity` (the
+        # code path added alongside the engine's round-4 change) against a
+        # small, deterministic double of the estimator boundary.
         import decoy_engine.execution as engine_exec
         from decoy_engine import ExecutionError
 
