@@ -78,12 +78,14 @@ nonzero), not EXIT_CAPACITY. `out_of_core_insufficient_memory` is kept
 recognized as LEGACY-engine compat only (an older engine still running the
 pre-recalibration hard-fail gate can still raise it); on a current engine
 the only code this exit actually fires for is
-`out_of_core_fanin_exceeds_budget` -- which itself needs more co-live DuckDB
-joiners than the budget can seat, a multi-parent-per-child shape the
-out-of-core route does not currently construct (it admits one parent per
-child), so on a current engine this exit is a defense-in-depth guard rather
-than an outcome a real job reaches. v1 checks the out-of-core-FK route only;
-see `decoy explain exit-codes`."""
+`out_of_core_fanin_exceeds_budget` -- when one table has more incoming FK
+edges (from distinct child FK columns, which the route DOES allow: the compat
+gate only rejects multiple parents into the same child column tuple) than the
+budget can seat one co-live DuckDB joiner apiece for, each needing DuckDB's
+1 MB minimum. That is a real but uncommon refusal (it takes tens of distinct
+FKs into one table at a small budget), not the everyday "job too big for the
+host" the build-floor estimate used to raise -- that estimate is now advisory.
+v1 checks the out-of-core-FK route only; see `decoy explain exit-codes`."""
 
 __all__ = [
     "EXIT_CAPACITY",

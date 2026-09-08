@@ -33,8 +33,12 @@ check is an "OOC-FK engine-gate capacity checker", NOT a whole-job OOM
 guarantee. `decoy run` fully loads every source into memory BEFORE it calls
 the engine, so an ingestion `MemoryError` or OS OOM-kill happens before this
 gate ever runs -- this check does not cover that, and does not cover the
-generate path. A "capacity: OK" here means one specific thing: the
-out-of-core-FK route's estimated resident floor is within budget.
+generate path. A "capacity: OK" here means only that no hard impossibility was
+found. The build-floor estimate is ADVISORY: when the predicted relation-build
+floor exceeds its cap, the check reports a WARNING with a recommended size and
+the job still proceeds (`--fail-on-warning` turns that warning into a nonzero
+exit). The one hard capacity refusal that exits EXIT_CAPACITY is a fan-in
+impossibility (more co-live DuckDB joiners than the budget can seat).
 
 Do NOT describe the output of this command as "platform parity." Preflight
 here is a local file/source/schema readiness gate. The spec (cli-first-
@@ -571,11 +575,12 @@ def preflight(
     """Local pre-run readiness checks for a pipeline config.
 
     Checks file existence, file readability, YAML syntax, schema validity,
-    and (v1) whether the engine's out-of-core-FK memory gate would refuse
-    the job. Reports findings as pass/warn/fail with structured output
-    available via --json. An insufficient capacity result exits
-    EXIT_CAPACITY (see `decoy explain exit-codes`), distinct from a config
-    problem (EXIT_USAGE).
+    and (v1) the engine's out-of-core-FK memory feasibility. The build-floor
+    estimate is advisory: an over-budget prediction reports a WARNING with a
+    recommended size, not a refusal (`--fail-on-warning` makes it exit
+    nonzero). Only a fan-in impossibility exits EXIT_CAPACITY (see `decoy
+    explain exit-codes`), distinct from a config problem (EXIT_USAGE). Reports
+    findings as pass/warn/fail with structured output available via --json.
 
     This is a LOCAL check only. It does NOT check platform server-side
     conditions, most engine run-time constraints, data quality, vault
