@@ -481,12 +481,15 @@ def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccum
         # resident inputs, accumulated outputs, and ingestion peak); render
         # it as a WARNING, not a green PASS, so `--fail-on-warning` can act
         # on it, but the job is not refused either way.
+        # Relay the engine's own wording verbatim: it distinguishes a floor that
+        # NEARS its cap (the warn band, floor still under cap) from one that
+        # EXCEEDS it, so a hardcoded "exceeds" here would misreport the near-cap
+        # case (e.g. a 300k-row floor sitting just under a 64 MB cap).
         acc.add_warn(
             name="capacity.out_of_core_fk",
             message=(
-                "ADVISORY -- OOC-FK estimated relation-build floor exceeds the build "
-                f"cap it would receive; recommend {needed} of memory (budget {available}). "
-                "The job is not refused; this is a recommendation, not a hard limit."
+                f"ADVISORY -- {estimate.message} Recommends {needed} (budget {available}); "
+                "the job is not refused, this is a recommendation."
             ),
         )
     elif estimate.verdict is CapacityVerdict.FIT:
