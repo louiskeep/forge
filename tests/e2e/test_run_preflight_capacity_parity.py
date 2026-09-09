@@ -13,11 +13,11 @@ through a real FK graph: `_compat.py` only rejects multiple parents for the
 SAME (child_table, child_columns) tuple, not a table with many DISTINCT
 incoming edges. `TestRealFanInIsReachable` builds a 67-distinct-parent
 topology (each parent on its own child column) so `child`'s incoming-edge
-count reaches 67, and the resident-path phase sizer opens that table's
-joiners+build at `incoming_edges + 1 = 68` co-live DuckDB instances -- more
-than the 64 MiB `_MIN_BUDGET_BYTES` floor can seat even a 1 MB `memory_limit`
-apiece, so both commands hit the real, unmocked `out_of_core_fanin_exceeds_
-budget` raise. `test_fanin_agrees_preflight_and_run_both_refuse` below still
+count reaches 67. For this buildless leaf the runtime opens 67 co-live joiner
+instances but PRICES them with an `incoming_edges + 1 = 68` divisor (the phase
+sizer's fixed build-slot, an over-count for a leaf) -- more than the 64 MiB
+`_MIN_BUDGET_BYTES` floor can seat even a 1 MB `memory_limit` apiece, so both
+commands hit the real, unmocked `out_of_core_fanin_exceeds_budget` raise. `test_fanin_agrees_preflight_and_run_both_refuse` below still
 mocks the engine boundary directly -- kept as a smaller, deterministic pin of
 the CLI's own rendering/exit-code contract for that code, now that the real
 topology test above it proves the condition is genuinely reachable.
@@ -161,14 +161,14 @@ class TestParity:
         # ROUND-4: this 300k-row shape used to be a mutual hard refusal
         # (`out_of_core_insufficient_memory`) at a 1 MiB detected ceiling
         # (floored to the 64 MiB `_MIN_BUDGET_BYTES` minimum). It is now
-        # mutual-advisory -- but AT that exact 64 MiB cap, the floor/cap
-        # margin is razor-thin (~3 MB), and a REAL run can still genuinely
-        # OOM inside DuckDB there (the advisory recommends more memory; it
-        # does not guarantee the job fits at a cap this tight -- see the
-        # engine plan's own risk section). A slightly larger detected
-        # ceiling (2 GiB + 100 MiB, giving a ~100 MB cap against this
-        # parent's ~58 MB floor) keeps the SAME warn-band outcome
-        # (floor >= 0.6 * cap) with real headroom, so `run` actually
+        # mutual-advisory -- but AT that exact 64 MiB cap the ~65 MB floor
+        # sits just OVER the ~64 MB cap (an over-cap advisory), and a REAL run
+        # can still genuinely OOM inside DuckDB there (the advisory recommends
+        # more memory; it does not guarantee the job fits at a cap this tight
+        # -- see the engine plan's own risk section). A slightly larger
+        # detected ceiling (2 GiB + 100 MiB, giving a ~100 MB cap against this
+        # parent's ~65 MB floor) keeps it FIT + warned (floor in the warn band,
+        # >= 0.6 * cap and under it) with real headroom, so `run` actually
         # completes rather than racing DuckDB's own allocator at the edge.
         parent, child = _parent_child_tables(300_000)
         config_path = _write_config(tmp_path, parent, child)

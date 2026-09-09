@@ -487,8 +487,8 @@ def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccum
         # on it, but the job is not refused either way.
         # Relay the engine's own wording verbatim: it distinguishes a floor that
         # NEARS its cap (the warn band, floor still under cap) from one that
-        # EXCEEDS it, so a hardcoded "exceeds" here would misreport the near-cap
-        # case (e.g. a 300k-row floor sitting just under a 64 MB cap).
+        # EXCEEDS it, so a hardcoded "exceeds" here would misreport a warn-band
+        # floor that still sits under its cap as over it.
         acc.add_warn(
             name="capacity.out_of_core_fk",
             message=(
