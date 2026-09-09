@@ -142,11 +142,12 @@ See also: decoy validate config, decoy validate distribution, decoy explain chun
 Local pre-run readiness checks for a pipeline config.
 
 Checks file existence, file readability, YAML syntax, schema validity,
-and (v1) whether the engine&#x27;s out-of-core-FK memory gate would refuse
-the job. Reports findings as pass/warn/fail with structured output
-available via --json. An insufficient capacity result exits
-EXIT_CAPACITY (see `decoy explain exit-codes`), distinct from a config
-problem (EXIT_USAGE).
+and (v1) the engine&#x27;s out-of-core-FK memory feasibility. The build-floor
+estimate is advisory: an over-budget prediction reports a WARNING with a
+recommended size, not a refusal (`--fail-on-warning` makes it exit
+nonzero). Only a fan-in impossibility exits EXIT_CAPACITY (see `decoy
+explain exit-codes`), distinct from a config problem (EXIT_USAGE). Reports
+findings as pass/warn/fail with structured output available via --json.
 
 This is a LOCAL check only. It does NOT check platform server-side
 conditions, most engine run-time constraints, data quality, vault
@@ -154,8 +155,8 @@ access, secrets availability, or network connectivity. The capacity
 check covers the out-of-core-FK route only -- it does not cover the
 ingestion peak `decoy run` pays before the engine&#x27;s gate runs, or the
 generate path. Use `decoy validate` for pure schema-only checks; use
-this command when you want to confirm source files are present and the
-job would clear the memory gate before starting a run.
+this command when you want to confirm source files are present and check
+the job&#x27;s capacity feasibility before starting a run.
 
 **Usage**:
 
@@ -194,8 +195,8 @@ What preflight checks:
   - YAML syntax and schema (same as `decoy validate`)
   - Source file existence and readability
   - Target overwrite risk (advisory warning)
-  - Out-of-core-FK memory capacity (v1; exits EXIT_CAPACITY if insufficient --
-    see: decoy explain exit-codes)
+  - Out-of-core-FK memory capacity (v1; build-floor is advisory, only a fan-in
+    impossibility exits EXIT_CAPACITY -- see: decoy explain exit-codes)
 
 What preflight does NOT check:
   - Platform server-side conditions (secrets, RBAC, schedules, network targets)

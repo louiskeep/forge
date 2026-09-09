@@ -66,8 +66,25 @@ Raised by `decoy run` when the engine's out-of-core-FK memory gate refuses a
 job, and by `decoy preflight` when its capacity check predicts the same
 refusal before the run starts. The fix is a bigger host/cgroup ceiling or a
 smaller job -- not a config mistake (EXIT_USAGE) and not an engine defect
-(EXIT_RUNTIME). Covers exactly two engine codes:
-`out_of_core_insufficient_memory` and `out_of_core_fanin_exceeds_budget`.
+(EXIT_RUNTIME).
+
+2026-09-08 (fan-in-only recalibration, paired with the engine's
+`fix/ooc-preflight-overreject-recalibration`): capacity refusal is now
+FAN-IN-ONLY. The engine's build-floor estimate (the other half of this gate)
+is advisory, not a refusal -- a job whose predicted relation-build floor
+exceeds its build cap now completes preflight/run with a WARNING (status
+"warn", `--fail-on-warning` governs whether that warning itself exits
+nonzero), not EXIT_CAPACITY. `out_of_core_insufficient_memory` is kept
+recognized as LEGACY-engine compat only (an older engine still running the
+pre-recalibration hard-fail gate can still raise it); on a current engine
+the only code this exit actually fires for is
+`out_of_core_fanin_exceeds_budget` -- when one table has more incoming FK
+edges (from distinct child FK columns, which the route DOES allow: the compat
+gate only rejects multiple parents into the same child column tuple) than the
+budget can seat one co-live DuckDB joiner apiece for, each needing DuckDB's
+1 MB minimum. That is a real but uncommon refusal (it takes tens of distinct
+FKs into one table at a small budget), not the everyday "job too big for the
+host" the build-floor estimate used to raise -- that estimate is now advisory.
 v1 checks the out-of-core-FK route only; see `decoy explain exit-codes`."""
 
 __all__ = [

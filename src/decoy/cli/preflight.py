@@ -11,9 +11,10 @@ What preflight checks (honest framing)
 4. File existence:     Does each declared source file exist on disk?
 5. File readability:   Can each source file be opened for reading?
 6. Target overwrite:   Does any output target already exist (advisory)?
-7. Capacity (v1):      Would the engine's out-of-core-FK memory gate refuse this
-                       job? Covers the out-of-core-FK route ONLY -- see the OOM
-                       checker v1 note below.
+7. Capacity (v1):      Out-of-core-FK memory feasibility. The build-floor
+                       estimate is advisory (warns, does not refuse); only a
+                       fan-in impossibility exits EXIT_CAPACITY. Covers the
+                       out-of-core-FK route ONLY -- see the OOM checker v1 note.
 
 What preflight does NOT check
 ------------------------------
@@ -33,8 +34,12 @@ check is an "OOC-FK engine-gate capacity checker", NOT a whole-job OOM
 guarantee. `decoy run` fully loads every source into memory BEFORE it calls
 the engine, so an ingestion `MemoryError` or OS OOM-kill happens before this
 gate ever runs -- this check does not cover that, and does not cover the
-generate path. A "capacity: OK" here means one specific thing: the
-out-of-core-FK route's estimated resident floor is within budget.
+generate path. A "capacity: OK" here means only that no hard impossibility was
+found. The build-floor estimate is ADVISORY: when the predicted relation-build
+floor exceeds its cap, the check reports a WARNING with a recommended size and
+the job still proceeds (`--fail-on-warning` turns that warning into a nonzero
+exit). The one hard capacity refusal that exits EXIT_CAPACITY is a fan-in
+impossibility (more co-live DuckDB joiners than the budget can seat).
 
 Do NOT describe the output of this command as "platform parity." Preflight
 here is a local file/source/schema readiness gate. The spec (cli-first-
@@ -79,8 +84,8 @@ What preflight checks:
   - YAML syntax and schema (same as `decoy validate`)
   - Source file existence and readability
   - Target overwrite risk (advisory warning)
-  - Out-of-core-FK memory capacity (v1; exits EXIT_CAPACITY if insufficient --
-    see: decoy explain exit-codes)
+  - Out-of-core-FK memory capacity (v1; build-floor is advisory, only a fan-in
+    impossibility exits EXIT_CAPACITY -- see: decoy explain exit-codes)
 
 What preflight does NOT check:
   - Platform server-side conditions (secrets, RBAC, schedules, network targets)
@@ -174,9 +179,7 @@ class _PreflightAccumulator:
 # ---------------------------------------------------------------------------
 
 
-def _check_source_files(
-    raw: dict[str, Any], base_dir: Path, acc: _PreflightAccumulator
-) -> None:
+def _check_source_files(raw: dict[str, Any], base_dir: Path, acc: _PreflightAccumulator) -> None:
     """Check that every declared source file exists and is readable.
 
     File checks only. Parser config, column layout, and format inference are
@@ -360,11 +363,14 @@ def _file_sources_missing_on_disk(raw: dict[str, Any], base_dir: Path) -> bool:
 def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccumulator) -> None:
     """Predict the out-of-core-FK memory-capacity gate before a run starts.
 
-    R4 honest framing: this covers ONE gate -- the out-of-core-FK route's
-    resident-memory floor. `decoy run` fully loads every source into memory
-    BEFORE it ever calls the engine, so an ingestion `MemoryError` or OS
-    OOM-kill happens before this gate runs; a "capacity: OK" here says
-    nothing about that. See the module docstring's "OOM checker v1" note.
+    R4 honest framing: this covers the out-of-core-FK route's memory check,
+    which has two branches -- an ADVISORY build-floor prediction (an over-cap
+    floor WARNS with a recommended size, it does not refuse) and a hard fan-in
+    impossibility guard (the only branch that exits EXIT_CAPACITY). `decoy run`
+    fully loads every source into memory BEFORE it ever calls the engine, so an
+    ingestion `MemoryError` or OS OOM-kill happens before this gate runs; a
+    "capacity: OK" here says nothing about that. See the module docstring's
+    "OOM checker v1" note.
 
     R5 capability-detect: an engine older than the one that ships
     `estimate_job_capacity` degrades to "not checked" rather than an
@@ -444,6 +450,22 @@ def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccum
     try:
         estimate = _engine_execution.estimate_job_capacity(config_dump, config_path.parent)
     except ExecutionError as exc:
+        if exc.code == "out_of_core_fanin_exceeds_budget":
+            # Round-4 (engine): the build-floor gate is now advisory, so
+            # `estimate_job_capacity` no longer returns INSUFFICIENT for
+            # that case -- but a fan-in impossibility discovered while
+            # resolving the memory budget still PROPAGATES as this
+            # ExecutionError instead of coming back as a verdict. Render it
+            # the same way the INSUFFICIENT verdict branch below does (a
+            # FAIL that trips EXIT_CAPACITY), so a fan-in job still refuses
+            # cleanly instead of crashing preflight on a raw traceback.
+            acc.capacity_insufficient = True
+            acc.add_fail(
+                name="capacity.out_of_core_fk",
+                message=f"INSUFFICIENT -- {exc.message}",
+                code=exc.code,
+            )
+            return
         if exc.code != "capacity_source_unprofilable":
             raise
         acc.add_fail(
@@ -456,7 +478,25 @@ def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccum
     needed = _format_gib(estimate.needed_bytes)
     available = _format_gib(estimate.available_bytes)
 
-    if estimate.verdict is CapacityVerdict.FIT:
+    if estimate.verdict is CapacityVerdict.FIT and estimate.warned:
+        # Round-4: FIT no longer means "clears the build-floor budget" -- it
+        # means "no hard impossibility detected". `warned=True` marks an
+        # adverse build-floor prediction (relation-build only; excludes
+        # resident inputs, accumulated outputs, and ingestion peak); render
+        # it as a WARNING, not a green PASS, so `--fail-on-warning` can act
+        # on it, but the job is not refused either way.
+        # Relay the engine's own wording verbatim: it distinguishes a floor that
+        # NEARS its cap (the warn band, floor still under cap) from one that
+        # EXCEEDS it, so a hardcoded "exceeds" here would misreport a warn-band
+        # floor that still sits under its cap as over it.
+        acc.add_warn(
+            name="capacity.out_of_core_fk",
+            message=(
+                f"ADVISORY -- {estimate.message} Recommends {needed} (budget {available}); "
+                "the job is not refused, this is a recommendation."
+            ),
+        )
+    elif estimate.verdict is CapacityVerdict.FIT:
         acc.add_pass(
             name="capacity.out_of_core_fk",
             message=(
@@ -476,7 +516,19 @@ def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccum
             code=estimate.code,
         )
     elif estimate.verdict is CapacityVerdict.UNKNOWN:
-        acc.add_pass(name="capacity.out_of_core_fk", message=f"not checked -- {estimate.message}")
+        # An uncertain route (a byte-estimate-promoted OOC job) forces UNKNOWN,
+        # but a build-floor advisory can still ride along on the estimate. Surface
+        # it as a warning so the recommendation is not lost and --fail-on-warning
+        # can act on it, exactly as it does on the confirmed FIT+warned path.
+        if estimate.warned:
+            acc.add_warn(
+                name="capacity.out_of_core_fk",
+                message=f"ADVISORY (route unconfirmed) -- {estimate.message}",
+            )
+        else:
+            acc.add_pass(
+                name="capacity.out_of_core_fk", message=f"not checked -- {estimate.message}"
+            )
     else:  # NOT_APPLICABLE
         acc.add_pass(
             name="capacity.out_of_core_fk", message=f"not applicable -- {estimate.message}"
@@ -530,11 +582,12 @@ def preflight(
     """Local pre-run readiness checks for a pipeline config.
 
     Checks file existence, file readability, YAML syntax, schema validity,
-    and (v1) whether the engine's out-of-core-FK memory gate would refuse
-    the job. Reports findings as pass/warn/fail with structured output
-    available via --json. An insufficient capacity result exits
-    EXIT_CAPACITY (see `decoy explain exit-codes`), distinct from a config
-    problem (EXIT_USAGE).
+    and (v1) the engine's out-of-core-FK memory feasibility. The build-floor
+    estimate is advisory: an over-budget prediction reports a WARNING with a
+    recommended size, not a refusal (`--fail-on-warning` makes it exit
+    nonzero). Only a fan-in impossibility exits EXIT_CAPACITY (see `decoy
+    explain exit-codes`), distinct from a config problem (EXIT_USAGE). Reports
+    findings as pass/warn/fail with structured output available via --json.
 
     This is a LOCAL check only. It does NOT check platform server-side
     conditions, most engine run-time constraints, data quality, vault
@@ -542,8 +595,8 @@ def preflight(
     check covers the out-of-core-FK route only -- it does not cover the
     ingestion peak `decoy run` pays before the engine's gate runs, or the
     generate path. Use `decoy validate` for pure schema-only checks; use
-    this command when you want to confirm source files are present and the
-    job would clear the memory gate before starting a run.
+    this command when you want to confirm source files are present and check
+    the job's capacity feasibility before starting a run.
     """
     state = setup_output(json_, quiet, verbose)
     config_str = str(config)
@@ -687,7 +740,12 @@ def _emit_preflight_result(
     # checked, and not applicable are all informative outcomes an operator
     # should see, not just the failure case.
     for cap in capacity_checks:
-        label = error("capacity:") if cap.status == "fail" else hint("capacity:")
+        if cap.status == "fail":
+            label = error("capacity:")
+        elif cap.status == "warn":
+            label = warn("capacity:")
+        else:
+            label = hint("capacity:")
         state.err_console.print(label, cap.message)
 
     if acc.has_failures:

@@ -231,9 +231,14 @@ class TestFourCapacityStates:
         assert "capacity:" in result.output
         assert "OK" in result.output
 
-    def test_insufficient_exits_capacity_not_usage(self, tmp_path: Path, low_threshold) -> None:
-        # A large-enough parent to push its floor past even the 64 MiB
-        # `_MIN_BUDGET_BYTES` resolve_ooc_memory_limit floors any budget at.
+    def test_warned_exits_ok_not_capacity(self, tmp_path: Path, low_threshold) -> None:
+        # ROUND-4 (engine `fix/ooc-preflight-overreject-recalibration`): the
+        # build-floor gate is now advisory, so this 300k-row parent -- large
+        # enough to push its ~65 MB floor just over the ~64 MB cap (the
+        # `_MIN_BUDGET_BYTES` 64 MiB budget's decimal cap), an over-cap advisory
+        # but no longer a hard refusal -- now
+        # renders a WARNING, not INSUFFICIENT, and preflight exits OK by
+        # default (only `--fail-on-warning` would make a warning nonzero).
         big_parent, big_child = _parent_child_tables(300_000)
         config_path = _write_config(tmp_path, tables=(big_parent, big_child))
         with mock.patch(
@@ -241,9 +246,26 @@ class TestFourCapacityStates:
             return_value=1024 * 1024,  # 1 MiB ceiling -> a tiny resolved budget
         ):
             result = _run_preflight(config_path)
-        assert result.exit_code == EXIT_CAPACITY
+        assert result.exit_code == EXIT_OK
         assert "capacity:" in result.output
-        assert "INSUFFICIENT" in result.output
+        assert "ADVISORY" in result.output
+        assert "INSUFFICIENT" not in result.output
+
+    def test_warned_with_fail_on_warning_exits_nonzero(self, tmp_path: Path, low_threshold) -> None:
+        # `--fail-on-warning` governs whether the advisory itself exits
+        # nonzero; default execution (the test above) exits EXIT_OK on the
+        # exact same job.
+        from decoy.cli.preflight import _WARN_EXIT
+
+        big_parent, big_child = _parent_child_tables(300_000)
+        config_path = _write_config(tmp_path, tables=(big_parent, big_child))
+        with mock.patch(
+            "decoy_engine.execution.out_of_core._budget.detect_effective_memory_bytes",
+            return_value=1024 * 1024,
+        ):
+            result = runner.invoke(app, ["preflight", str(config_path), "--fail-on-warning"])
+        assert result.exit_code == _WARN_EXIT
+        assert result.exit_code != EXIT_OK
 
     def test_unknown_older_engine_simulated(self, tmp_path: Path, monkeypatch) -> None:
         """T9 groundwork: with the estimator entrypoint absent (simulating an
@@ -286,9 +308,12 @@ class TestUnexpectedEstimatorExceptionPropagates:
 
 
 class TestJsonEnvelope:
-    def test_insufficient_json_carries_code_without_parsing_text(
-        self, tmp_path: Path, low_threshold
-    ) -> None:
+    def test_warned_json_status_is_warn_not_fail(self, tmp_path: Path, low_threshold) -> None:
+        # ROUND-4: this 300k-row shape used to be a fail/INSUFFICIENT; the
+        # build-floor gate is now advisory, so the JSON envelope reports a
+        # "warn" status (both at the top-level `capacity` block and the
+        # matching `checks` entry) with a null `code` (no refusal fired),
+        # not "fail".
         big_parent, big_child = _parent_child_tables(300_000)
         config_path = _write_config(tmp_path, tables=(big_parent, big_child))
         with mock.patch(
@@ -296,13 +321,41 @@ class TestJsonEnvelope:
             return_value=1024 * 1024,
         ):
             result = _run_preflight(config_path, json_mode=True)
+        assert result.exit_code == EXIT_OK
+        payload = _json.loads(result.output)
+        assert payload["capacity"]["status"] == "warn"
+        assert payload["capacity"]["code"] is None
+        capacity_checks = [c for c in payload["checks"] if c["name"] == "capacity.out_of_core_fk"]
+        assert capacity_checks[0]["status"] == "warn"
+
+    def test_fanin_json_status_is_fail_with_code(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The fan-in refusal IS constructible through a real FK graph --
+        # `_compat.py` only rejects multiple parents resolving the SAME
+        # (child_table, child_columns) tuple, not a table with many DISTINCT
+        # incoming edges (see `tests/e2e/test_run_preflight_capacity_parity.py::
+        # TestRealFanInIsReachable` for a real 67-distinct-parent topology
+        # that drives it). This test instead pins the CLI's rendering of a
+        # PROPAGATED fan-in ExecutionError from `estimate_job_capacity` (the
+        # code path added alongside the engine's round-4 change) against a
+        # small, deterministic double of the estimator boundary.
+        import decoy_engine.execution as engine_exec
+        from decoy_engine import ExecutionError
+
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise ExecutionError(
+                code="out_of_core_fanin_exceeds_budget",
+                message="fan-in exceeds budget (test double).",
+            )
+
+        monkeypatch.setattr(engine_exec, "estimate_job_capacity", _boom)
+        config_path = _write_config(tmp_path)
+        result = _run_preflight(config_path, json_mode=True)
         assert result.exit_code == EXIT_CAPACITY
         payload = _json.loads(result.output)
         assert payload["capacity"]["status"] == "fail"
-        assert payload["capacity"]["code"] in {
-            "out_of_core_insufficient_memory",
-            "out_of_core_fanin_exceeds_budget",
-        }
+        assert payload["capacity"]["code"] == "out_of_core_fanin_exceeds_budget"
         capacity_checks = [c for c in payload["checks"] if c["name"] == "capacity.out_of_core_fk"]
         assert capacity_checks[0]["code"] == payload["capacity"]["code"]
 
@@ -341,9 +394,7 @@ class TestRelativeSourcePath:
         cfg = {
             "version": 1,
             "global_settings": {"seed": 7},
-            "sources": {
-                "parent": {"type": "file", "path": "parent.parquet", "format": "parquet"}
-            },
+            "sources": {"parent": {"type": "file", "path": "parent.parquet", "format": "parquet"}},
             "tables": [{"name": "parent", "columns": [{"name": "id", "strategy": "passthrough"}]}],
             "targets": {
                 "parent": {

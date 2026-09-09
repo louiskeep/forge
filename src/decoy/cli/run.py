@@ -33,6 +33,11 @@ from decoy.ui.theme import error, hint, warn
 # any other reason -- matched narrowly so a routing/compat/orphan-FK
 # `ExecutionError` (any other code) keeps its existing EXIT_RUNTIME
 # classification below. See docs/plans/2026-07-24-oom-checker-cli-v1.md R8.
+# `out_of_core_insufficient_memory` is now LEGACY-ENGINE compat (round-4, engine
+# side): a current engine's build-floor gate is advisory and never raises it, so
+# this code only ever arrives from an older engine still running the pre-round-4
+# hard-fail gate; kept recognized here rather than dropped so the CLI stays
+# correct against that older engine too.
 _CAPACITY_CODES = frozenset({"out_of_core_insufficient_memory", "out_of_core_fanin_exceeds_budget"})
 
 
