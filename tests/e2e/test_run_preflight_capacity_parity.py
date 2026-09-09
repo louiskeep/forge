@@ -308,14 +308,17 @@ def _fanin_config(tmp_path: Path, n_parents: int = _FANIN_INCOMING_EDGES, rows: 
 
 
 class TestRealFanInIsReachable:
-    """No mocking of the engine's capacity boundary: a real 67-distinct-
-    parent FK graph drives `child`'s incoming-edge count to 67, so the
-    resident-path phase sizer (`resolve_phase_memory_limits` /
-    `evaluate_capacity`'s own fan-in loop) opens 68 co-live DuckDB instances
-    for it -- more than the 64 MiB `_MIN_BUDGET_BYTES` floor can seat even a
-    1 MB `memory_limit` apiece (68 * 1_000_000 > 67_108_864), so both
-    `decoy preflight` and `decoy run` hit the real `out_of_core_fanin_
-    exceeds_budget` raise, proving the plan's acceptance case end to end."""
+    """No mocking of the engine's capacity boundary: a real 67-distinct-parent
+    FK graph drives `child`'s incoming-edge count to 67. For this buildless
+    leaf the runtime opens 67 co-live joiner instances, but the resident phase
+    sizer (`resolve_phase_memory_limits`) and `evaluate_capacity`'s fan-in loop
+    both PRICE them with an `incoming + 1 = 68` divisor (the sizer's fixed
+    build-slot, an over-count for a leaf) -- more than the 64 MiB
+    `_MIN_BUDGET_BYTES` floor can seat even a 1 MB `memory_limit` apiece
+    (68 * 1_000_000 > 67_108_864). `enforce_ooc_memory_preflight` prices the
+    same 68 and refuses first, so both `decoy preflight` and `decoy run` hit
+    `out_of_core_fanin_exceeds_budget`, proving the plan's acceptance case end
+    to end."""
 
     def test_fanin_real_topology_exits_capacity_on_both_commands(
         self, tmp_path: Path, low_threshold_both_commands
