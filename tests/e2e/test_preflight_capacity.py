@@ -234,8 +234,9 @@ class TestFourCapacityStates:
     def test_warned_exits_ok_not_capacity(self, tmp_path: Path, low_threshold) -> None:
         # ROUND-4 (engine `fix/ooc-preflight-overreject-recalibration`): the
         # build-floor gate is now advisory, so this 300k-row parent -- large
-        # enough to push its floor into the warn band against the 64 MiB
-        # `_MIN_BUDGET_BYTES` floor, but no longer a hard refusal -- now
+        # enough to push its ~65 MB floor just over the ~64 MB cap (the
+        # `_MIN_BUDGET_BYTES` 64 MiB budget's decimal cap), an over-cap advisory
+        # but no longer a hard refusal -- now
         # renders a WARNING, not INSUFFICIENT, and preflight exits OK by
         # default (only `--fail-on-warning` would make a warning nonzero).
         big_parent, big_child = _parent_child_tables(300_000)
