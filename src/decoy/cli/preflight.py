@@ -363,11 +363,14 @@ def _file_sources_missing_on_disk(raw: dict[str, Any], base_dir: Path) -> bool:
 def _check_capacity(raw: dict[str, Any], config_path: Path, acc: _PreflightAccumulator) -> None:
     """Predict the out-of-core-FK memory-capacity gate before a run starts.
 
-    R4 honest framing: this covers ONE gate -- the out-of-core-FK route's
-    resident-memory floor. `decoy run` fully loads every source into memory
-    BEFORE it ever calls the engine, so an ingestion `MemoryError` or OS
-    OOM-kill happens before this gate runs; a "capacity: OK" here says
-    nothing about that. See the module docstring's "OOM checker v1" note.
+    R4 honest framing: this covers the out-of-core-FK route's memory check,
+    which has two branches -- an ADVISORY build-floor prediction (an over-cap
+    floor WARNS with a recommended size, it does not refuse) and a hard fan-in
+    impossibility guard (the only branch that exits EXIT_CAPACITY). `decoy run`
+    fully loads every source into memory BEFORE it ever calls the engine, so an
+    ingestion `MemoryError` or OS OOM-kill happens before this gate runs; a
+    "capacity: OK" here says nothing about that. See the module docstring's
+    "OOM checker v1" note.
 
     R5 capability-detect: an engine older than the one that ships
     `estimate_job_capacity` degrades to "not checked" rather than an

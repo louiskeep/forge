@@ -227,12 +227,17 @@ class TestParity:
         assert "capacity:" in run_result.output
 
 
-# A table's incoming-edge count on the resident path opens `incoming + 1`
-# co-live DuckDB instances (joiners plus that table's own build); raising
+# On the resident path the phase sizer opens a joiner cap at `incoming + 1`
+# instances REGARDLESS of whether the table also builds a relation -- the `+1`
+# is a fixed build-slot the sizer always assumes (an over-count for this pure
+# leaf, which has no outgoing edge and so opens no build connection; a shared
+# pre-existing behavior, not this test's concern). Raising
 # `out_of_core_fanin_exceeds_budget` needs `(incoming + 1) * 1_000_000 >
-# _MIN_BUDGET_BYTES` (67_108_864), i.e. incoming >= 67 -- the boundary the
-# engine's own `_per_instance_mib` docstring pins ("(64 MiB, 67 live) admits;
-# (64 MiB, 68 live) raises").
+# _MIN_BUDGET_BYTES` (67_108_864), i.e. incoming >= 67. The preflight's
+# `enforce_ooc_memory_preflight` prices the same `incoming + 1` and refuses
+# FIRST, before the runner ever reaches the phase sizer, so `decoy run` exits
+# EXIT_CAPACITY on the preflight, not on a mid-run raise. Boundary pinned by
+# `_per_instance_mib` ("(64 MiB, 67 live) admits; (64 MiB, 68 live) raises").
 _FANIN_INCOMING_EDGES = 67
 # Exceeds `low_threshold_both_commands`' out_of_core_threshold_rows (10) so
 # these tiny tables still route out_of_core; fan-in is a graph-structural
